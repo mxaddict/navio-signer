@@ -1,0 +1,52 @@
+# navio-signer configuration.
+#
+# Copy this file to one of:
+#   - ./config.toml (cwd)
+#   - $XDG_CONFIG_HOME/navio-signer/config.toml  (typically ~/.config/navio-signer/config.toml on linux,
+#                                                 ~/Library/Application Support/navio-signer/config.toml on macOS)
+#
+# All paths may be absolute or shell-expanded ($HOME, ~). Plaintext secrets
+# (PKCS#12 password) live on local disk — keep file mode 0600 and prefer a
+# disk-encrypted volume.
+
+[github]
+# Personal access token. Required scopes:
+#   - `actions:read` on source repo (to list workflow runs + download artifacts)
+#   - `contents:write` on source repo (to create/upload releases)
+# Fine-grained, repo-scoped tokens recommended.
+token = "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+source_repo = "nav-io/navio-core"
+workflow = "guix.yml"
+# Optional: which refs to sign. Default: master + v* tags.
+# refs = ["refs/heads/master", "refs/tags/v*"]
+
+[signing.linux]
+# GPG key for detach-signing linux tarballs and the top-level SHA256SUMS.
+# Use the long-form fingerprint (16+ hex chars).
+gpg_key_id = "0123456789ABCDEF0123456789ABCDEF01234567"
+
+[signing.windows]
+# Authenticode signing for mingw .exe / .dll.
+# osslsigncode must be on PATH: `brew install osslsigncode` on macOS.
+pkcs12_path = "/Users/aguycalled/keys/navio-codesign.p12"
+pkcs12_password = "REDACTED"
+# RFC3161 timestamp authority. Default: Sectigo (free public TSA).
+# timestamp_url = "http://timestamp.sectigo.com"
+
+[signing.macos]
+# Developer ID Application certificate identity, as shown by:
+#   security find-identity -p codesigning -v
+identity = "Developer ID Application: Your Name (TEAMID)"
+# notarytool keychain profile — create once via:
+#   xcrun notarytool store-credentials "navio-notary" \
+#     --apple-id <appleid> --team-id <TEAMID> --password <app-specific-pw>
+keychain_profile = "navio-notary"
+
+[daemon]
+# Poll interval for new guix workflow runs.
+poll_interval_secs = 60
+
+# [paths]
+# Override default $XDG_DATA_HOME/navio-signer location for the state DB and
+# per-run work directories. Leave commented to use the default.
+# data_dir = "/var/lib/navio-signer"
