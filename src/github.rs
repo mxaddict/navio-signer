@@ -1,6 +1,9 @@
 use anyhow::{Context, Result, anyhow, bail};
+use bytes::Bytes;
 use octocrab::Octocrab;
-use octocrab::models::workflows::Run;
+use octocrab::models::workflows::{Run, WorkflowListArtifact};
+use octocrab::models::{ArtifactId, RunId};
+use octocrab::params::actions::ArchiveFormat;
 
 use crate::config::GithubConfig;
 
@@ -91,6 +94,38 @@ impl GhClient {
             .await
             .context("listing workflow runs")?;
         Ok(page.items)
+    }
+
+    /// List all artifacts attached to a workflow run.
+    pub async fn list_artifacts(&self, run_id: u64) -> Result<Vec<WorkflowListArtifact>> {
+        let etagged = self
+            .octo
+            .actions()
+            .list_workflow_run_artifacts(self.owner.clone(), self.repo.clone(), RunId(run_id))
+            .per_page(100u8)
+            .send()
+            .await
+            .context("listing workflow run artifacts")?;
+        let page = etagged
+            .value
+            .ok_or_else(|| anyhow!("artifacts list returned no body"))?;
+        Ok(page.items)
+    }
+
+    /// Download a single artifact as a zip archive (raw bytes).
+    pub async fn download_artifact_zip(&self, artifact_id: ArtifactId) -> Result<Bytes> {
+        let bytes = self
+            .octo
+            .actions()
+            .download_artifact(
+                self.owner.clone(),
+                self.repo.clone(),
+                artifact_id,
+                ArchiveFormat::Zip,
+            )
+            .await
+            .context("downloading artifact zip")?;
+        Ok(bytes)
     }
 
     /// If `head_branch` matches one of the configured refs, return the

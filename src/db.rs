@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -155,6 +155,39 @@ impl Db {
             ],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Update an existing build's state. If `error` is Some, it's stored;
+    /// if None, the error column is cleared.
+    pub fn set_state(&self, run_id: u64, state: State, error: Option<&str>) -> Result<()> {
+        let now = now_unix();
+        let changed = self.conn.execute(
+            "UPDATE builds
+             SET state = ?1, updated_at = ?2, error = ?3
+             WHERE run_id = ?4",
+            params![state.as_str(), now, error, run_id as i64],
+        )?;
+        if changed == 0 {
+            bail!("no build row for run_id {run_id}");
+        }
+        Ok(())
+    }
+
+    /// Update a build's recorded release identifiers (used by the publisher).
+    pub fn set_release(
+        &self,
+        run_id: u64,
+        release_id: Option<i64>,
+        release_tag: Option<&str>,
+    ) -> Result<()> {
+        let now = now_unix();
+        self.conn.execute(
+            "UPDATE builds
+             SET release_id = ?1, release_tag = ?2, updated_at = ?3
+             WHERE run_id = ?4",
+            params![release_id, release_tag, now, run_id as i64],
+        )?;
+        Ok(())
     }
 
     pub fn list_all(&self) -> Result<Vec<Build>> {

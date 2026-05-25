@@ -8,6 +8,7 @@ mod db;
 mod github;
 mod lockfile;
 mod logging;
+mod paths;
 
 use cli::{Cli, Command};
 
