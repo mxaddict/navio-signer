@@ -1,11 +1,11 @@
-// Phase 1 scaffold: sqlite schema + state enum. Consumed starting Phase 2.
 #![allow(dead_code)]
 
-use anyhow::{Context, Result};
-use rusqlite::Connection;
+use anyhow::{Context, Result, anyhow};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-/// Current schema version. Bump and add a migration when changing the schema.
+/// Bump and add a migration when changing the schema.
 const SCHEMA_VERSION: i32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,35 @@ impl State {
             State::Failed => "failed",
         }
     }
+}
+
+impl FromStr for State {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "discovered" => Ok(State::Discovered),
+            "fetched" => Ok(State::Fetched),
+            "verified" => Ok(State::Verified),
+            "signed" => Ok(State::Signed),
+            "published" => Ok(State::Published),
+            "failed" => Ok(State::Failed),
+            other => Err(anyhow!("unknown state: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Build {
+    pub run_id: u64,
+    pub head_sha: String,
+    pub ref_name: String,
+    pub state: State,
+    pub discovered_at: i64,
+    pub updated_at: i64,
+    pub error: Option<String>,
+    pub release_id: Option<i64>,
+    pub release_tag: Option<String>,
 }
 
 pub struct Db {
@@ -96,7 +125,105 @@ impl Db {
         let xdg = xdg::BaseDirectories::with_prefix("navio-signer");
         let dir = xdg
             .get_data_home()
-            .ok_or_else(|| anyhow::anyhow!("no $XDG_DATA_HOME"))?;
+            .ok_or_else(|| anyhow!("no $XDG_DATA_HOME"))?;
         Ok(dir)
     }
+
+    pub fn contains_run(&self, run_id: u64) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM builds WHERE run_id = ?1",
+            [run_id as i64],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Insert a freshly-discovered run. No-op if run_id already known.
+    /// Returns true if a new row was inserted.
+    pub fn insert_discovered(&self, run_id: u64, head_sha: &str, ref_name: &str) -> Result<bool> {
+        let now = now_unix();
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO builds
+                (run_id, head_sha, ref_name, state, discovered_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params![
+                run_id as i64,
+                head_sha,
+                ref_name,
+                State::Discovered.as_str(),
+                now,
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn list_all(&self) -> Result<Vec<Build>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, head_sha, ref_name, state, discovered_at, updated_at,
+                    error, release_id, release_tag
+             FROM builds
+             ORDER BY discovered_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], row_to_build)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_by_state(&self, state: State) -> Result<Vec<Build>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, head_sha, ref_name, state, discovered_at, updated_at,
+                    error, release_id, release_tag
+             FROM builds
+             WHERE state = ?1
+             ORDER BY discovered_at ASC",
+        )?;
+        let rows = stmt
+            .query_map([state.as_str()], row_to_build)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get(&self, run_id: u64) -> Result<Option<Build>> {
+        self.conn
+            .query_row(
+                "SELECT run_id, head_sha, ref_name, state, discovered_at, updated_at,
+                        error, release_id, release_tag
+                 FROM builds
+                 WHERE run_id = ?1",
+                [run_id as i64],
+                row_to_build,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+}
+
+fn row_to_build(row: &rusqlite::Row<'_>) -> rusqlite::Result<Build> {
+    let state_str: String = row.get(3)?;
+    let state = State::from_str(&state_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::other(e.to_string())),
+        )
+    })?;
+    Ok(Build {
+        run_id: row.get::<_, i64>(0)? as u64,
+        head_sha: row.get(1)?,
+        ref_name: row.get(2)?,
+        state,
+        discovered_at: row.get(4)?,
+        updated_at: row.get(5)?,
+        error: row.get(6)?,
+        release_id: row.get(7)?,
+        release_tag: row.get(8)?,
+    })
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

@@ -5,6 +5,8 @@ mod cli;
 mod commands;
 mod config;
 mod db;
+mod github;
+mod lockfile;
 mod logging;
 
 use cli::{Cli, Command};
