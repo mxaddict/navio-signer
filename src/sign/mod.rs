@@ -1,4 +1,5 @@
 pub mod linux;
+pub mod windows;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

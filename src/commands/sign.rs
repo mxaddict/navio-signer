@@ -6,7 +6,7 @@ use crate::cli::{Cli, RunArgs};
 use crate::config::Config;
 use crate::db::{Db, State};
 use crate::paths;
-use crate::sign::{Platform, is_release_archive, linux};
+use crate::sign::{Platform, is_release_archive, linux, windows};
 
 pub async fn run(cli: &Cli, args: RunArgs) -> Result<()> {
     let cfg = Config::load(cli.config.as_deref())?;
@@ -14,9 +14,11 @@ pub async fn run(cli: &Cli, args: RunArgs) -> Result<()> {
 }
 
 /// Sign all per-HOST release archives for a verified run. Linux tarballs
-/// get a detached GPG signature (Phase 5). Windows/macOS signers land in
-/// Phases 6 and 7; until then they're skipped with a warning and the
-/// build's state is held at `verified` so the publisher won't pick it up.
+/// get a detached GPG signature (Phase 5). Windows .exe/.dll get
+/// Authenticode signatures via osslsigncode + deterministic zip repack
+/// (Phase 6). macOS signing lands in Phase 7; until then darwin archives
+/// are skipped with a warning and the build's state is held at `verified`
+/// so the publisher won't pick it up.
 pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
     let db = Db::open(&paths::data_dir(cfg)?)?;
     let build = db
@@ -48,7 +50,7 @@ pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
     }
 
     let mut signed_linux = 0u32;
-    let mut deferred_mingw = 0u32;
+    let mut signed_mingw = 0u32;
     let mut deferred_darwin = 0u32;
     let mut unknown = 0u32;
 
@@ -64,7 +66,7 @@ pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
             &dir,
             cfg,
             &mut signed_linux,
-            &mut deferred_mingw,
+            &mut signed_mingw,
             &mut deferred_darwin,
             &mut unknown,
         ) {
@@ -76,18 +78,17 @@ pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
         }
     }
 
-    let deferred_total = deferred_mingw + deferred_darwin;
-    if deferred_total > 0 {
+    if deferred_darwin > 0 {
         warn!(
             signed_linux,
-            deferred_mingw,
+            signed_mingw,
             deferred_darwin,
             unknown,
-            "sign partial: non-linux signers not implemented yet (phases 6 + 7); leaving state=verified"
+            "sign partial: darwin signer not implemented yet (phase 7); leaving state=verified"
         );
     } else {
         db.set_state(run_id, State::Signed, None)?;
-        info!(signed_linux, unknown, "sign complete");
+        info!(signed_linux, signed_mingw, unknown, "sign complete");
     }
     Ok(())
 }
@@ -96,7 +97,7 @@ fn sign_one_dir(
     dir: &Path,
     cfg: &Config,
     signed_linux: &mut u32,
-    deferred_mingw: &mut u32,
+    signed_mingw: &mut u32,
     deferred_darwin: &mut u32,
     unknown: &mut u32,
 ) -> Result<()> {
@@ -118,8 +119,8 @@ fn sign_one_dir(
                 *signed_linux += 1;
             }
             Platform::Mingw => {
-                warn!(file = %path.display(), "TODO: phase 6 — windows osslsigncode not implemented");
-                *deferred_mingw += 1;
+                windows::sign_zip(&path, &cfg.signing.windows)?;
+                *signed_mingw += 1;
             }
             Platform::Darwin => {
                 warn!(file = %path.display(), "TODO: phase 7 — darwin codesign + notarytool not implemented");
