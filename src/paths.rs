@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
@@ -54,4 +56,38 @@ pub fn extract_zip(zip_bytes: &[u8], dest: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Stream a file through SHA-256 and return the hex digest (lowercase).
+pub fn sha256_file(path: &Path) -> Result<String> {
+    let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut f, &mut hasher).with_context(|| format!("hashing {}", path.display()))?;
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha256_known_vector() {
+        let tmp = std::env::temp_dir().join("navio-signer-sha-test");
+        std::fs::write(&tmp, b"abc").unwrap();
+        // SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+        let got = sha256_file(&tmp).unwrap();
+        assert_eq!(
+            got,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
