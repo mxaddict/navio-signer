@@ -6,19 +6,21 @@ use crate::cli::{Cli, RunArgs};
 use crate::config::Config;
 use crate::db::{Db, State};
 use crate::paths;
-use crate::sign::{Platform, is_release_archive, linux, windows};
+use crate::sign::{Platform, darwin, is_release_archive, linux, windows};
 
 pub async fn run(cli: &Cli, args: RunArgs) -> Result<()> {
     let cfg = Config::load(cli.config.as_deref())?;
     sign_one(&cfg, args.run_id).await
 }
 
-/// Sign all per-HOST release archives for a verified run. Linux tarballs
-/// get a detached GPG signature (Phase 5). Windows .exe/.dll get
-/// Authenticode signatures via osslsigncode + deterministic zip repack
-/// (Phase 6). macOS signing lands in Phase 7; until then darwin archives
-/// are skipped with a warning and the build's state is held at `verified`
-/// so the publisher won't pick it up.
+/// Sign all per-HOST release archives for a verified run.
+///
+/// - Linux tarballs: detached GPG signature alongside the tarball (`.asc`).
+/// - Windows zip: every `.exe`/`.dll` inside gets an Authenticode signature
+///   via osslsigncode, then the zip is repacked deterministically.
+/// - Darwin tarball: every Mach-O binary gets `codesign --options runtime
+///   --timestamp --force`, then the bundle is notarized via `xcrun
+///   notarytool submit --wait`, and the tarball is repacked deterministically.
 pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
     let db = Db::open(&paths::data_dir(cfg)?)?;
     let build = db
@@ -51,7 +53,7 @@ pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
 
     let mut signed_linux = 0u32;
     let mut signed_mingw = 0u32;
-    let mut deferred_darwin = 0u32;
+    let mut signed_darwin = 0u32;
     let mut unknown = 0u32;
 
     for entry in std::fs::read_dir(&workdir)
@@ -67,7 +69,7 @@ pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
             cfg,
             &mut signed_linux,
             &mut signed_mingw,
-            &mut deferred_darwin,
+            &mut signed_darwin,
             &mut unknown,
         ) {
             Ok(()) => {}
@@ -78,18 +80,11 @@ pub async fn sign_one(cfg: &Config, run_id: u64) -> Result<()> {
         }
     }
 
-    if deferred_darwin > 0 {
-        warn!(
-            signed_linux,
-            signed_mingw,
-            deferred_darwin,
-            unknown,
-            "sign partial: darwin signer not implemented yet (phase 7); leaving state=verified"
-        );
-    } else {
-        db.set_state(run_id, State::Signed, None)?;
-        info!(signed_linux, signed_mingw, unknown, "sign complete");
-    }
+    db.set_state(run_id, State::Signed, None)?;
+    info!(
+        signed_linux,
+        signed_mingw, signed_darwin, unknown, "sign complete"
+    );
     Ok(())
 }
 
@@ -98,7 +93,7 @@ fn sign_one_dir(
     cfg: &Config,
     signed_linux: &mut u32,
     signed_mingw: &mut u32,
-    deferred_darwin: &mut u32,
+    signed_darwin: &mut u32,
     unknown: &mut u32,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -123,8 +118,8 @@ fn sign_one_dir(
                 *signed_mingw += 1;
             }
             Platform::Darwin => {
-                warn!(file = %path.display(), "TODO: phase 7 — darwin codesign + notarytool not implemented");
-                *deferred_darwin += 1;
+                darwin::sign_tarball(&path, &cfg.signing.macos)?;
+                *signed_darwin += 1;
             }
             Platform::Unknown => {
                 warn!(file = %path.display(), "unknown platform; skipping");

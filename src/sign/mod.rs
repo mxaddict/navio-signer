@@ -1,3 +1,4 @@
+pub mod darwin;
 pub mod linux;
 pub mod windows;
 
