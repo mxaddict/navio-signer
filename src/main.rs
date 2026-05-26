@@ -9,6 +9,7 @@ mod github;
 mod lockfile;
 mod logging;
 mod paths;
+mod publish;
 mod sign;
 
 use cli::{Cli, Command};

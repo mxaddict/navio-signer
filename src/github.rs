@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use octocrab::Octocrab;
+use octocrab::models::repos::Release;
 use octocrab::models::workflows::{Run, WorkflowListArtifact};
 use octocrab::models::{ArtifactId, RunId};
 use octocrab::params::actions::ArchiveFormat;
@@ -126,6 +127,102 @@ impl GhClient {
             .await
             .context("downloading artifact zip")?;
         Ok(bytes)
+    }
+
+    /// Look up a release by tag. Returns Ok(None) when the release does
+    /// not exist (404), Err for any other failure.
+    pub async fn get_release_by_tag(&self, tag: &str) -> Result<Option<Release>> {
+        match self
+            .octo
+            .repos(&self.owner, &self.repo)
+            .releases()
+            .get_by_tag(tag)
+            .await
+        {
+            Ok(r) => Ok(Some(r)),
+            Err(octocrab::Error::GitHub { source, .. }) if source.status_code.as_u16() == 404 => {
+                Ok(None)
+            }
+            Err(e) => Err(e).context(format!("fetching release {tag}")),
+        }
+    }
+
+    /// Create a new release. Caller decides tag, title, body, prerelease.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_release(
+        &self,
+        tag: &str,
+        target_commitish: &str,
+        title: &str,
+        body: &str,
+        prerelease: bool,
+    ) -> Result<Release> {
+        self.octo
+            .repos(&self.owner, &self.repo)
+            .releases()
+            .create(tag)
+            .target_commitish(target_commitish)
+            .name(title)
+            .body(body)
+            .prerelease(prerelease)
+            .draft(false)
+            .send()
+            .await
+            .with_context(|| format!("creating release {tag}"))
+    }
+
+    /// Delete one asset by ID (used to clobber an existing asset before
+    /// re-uploading under the same name).
+    pub async fn delete_asset(&self, asset_id: u64) -> Result<()> {
+        self.octo
+            .repos(&self.owner, &self.repo)
+            .release_assets()
+            .delete(asset_id)
+            .await
+            .with_context(|| format!("deleting asset {asset_id}"))
+    }
+
+    /// Upload a single asset to a release.
+    pub async fn upload_asset(
+        &self,
+        release_id: u64,
+        asset_name: &str,
+        bytes: Bytes,
+    ) -> Result<()> {
+        self.octo
+            .repos(&self.owner, &self.repo)
+            .releases()
+            .upload_asset(release_id, asset_name, bytes)
+            .send()
+            .await
+            .with_context(|| format!("uploading asset {asset_name}"))?;
+        Ok(())
+    }
+
+    /// Fetch and base64-decode a file from the source repo at a specific ref.
+    /// Returns Ok(None) when the file doesn't exist; Err for transport errors.
+    pub async fn fetch_file(&self, path: &str, r#ref: &str) -> Result<Option<String>> {
+        let res = self
+            .octo
+            .repos(&self.owner, &self.repo)
+            .get_content()
+            .path(path)
+            .r#ref(r#ref)
+            .send()
+            .await;
+        let mut items = match res {
+            Ok(c) => c,
+            Err(octocrab::Error::GitHub { source, .. }) if source.status_code.as_u16() == 404 => {
+                return Ok(None);
+            }
+            Err(e) => {
+                return Err(e).context(format!("fetching {path}@{ref}", ref = r#ref));
+            }
+        };
+        let Some(item) = items.take_items().into_iter().next() else {
+            return Ok(None);
+        };
+        Ok(item.decoded_content())
     }
 
     /// If `head_branch` matches one of the configured refs, return the
